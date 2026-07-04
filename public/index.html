@@ -1210,14 +1210,18 @@ function createTreeNode(item, parentPath, type) {
     ? (parentPath ? parentPath + '/' + sanitize(title) : sanitize(title))
     : parentPath;
 
+  const alreadyChecked = state.tree[nodeId] ? state.tree[nodeId].checked : false;
+  const loaded = state.tree[nodeId] ? state.tree[nodeId].loaded : false;
+  const expanded = state.tree[nodeId] ? state.tree[nodeId].expanded : false;
+
   state.tree[nodeId] = {
     data: item,
     type: type,
     folderPath: folderPath,
     parentPath: parentPath,
-    loaded: false,
-    expanded: false,
-    checked: false,
+    loaded: loaded,
+    expanded: expanded,
+    checked: alreadyChecked,
   };
 
   const node = document.createElement('div');
@@ -1237,7 +1241,7 @@ function createTreeNode(item, parentPath, type) {
       <div class="tree-toggle ${hasChildren ? '' : 'hidden'}" onclick="event.stopPropagation(); toggleExpand('${nodeId}')">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l5 4-5 4V1z"/></svg>
       </div>
-      <div class="tree-checkbox" data-node-id="${nodeId}" onclick="event.stopPropagation(); toggleCheck('${nodeId}')"></div>
+      <div class="tree-checkbox ${alreadyChecked ? 'checked' : ''}" data-node-id="${nodeId}" onclick="event.stopPropagation(); toggleCheck('${nodeId}')"></div>
       <div class="tree-icon">${icon}</div>
       <div class="tree-label" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
       ${childCount ? `<div class="tree-meta">${childCount}</div>` : ''}
@@ -1319,12 +1323,28 @@ function handleTreeClick(event, nodeId) {
   }
 }
 
-function toggleCheck(nodeId) {
+async function toggleCheck(nodeId) {
   const treeData = state.tree[nodeId];
   if (!treeData) return;
 
   const newChecked = !treeData.checked;
-  setCheck(nodeId, newChecked);
+
+  if (treeData.type === 'folder') {
+    if (newChecked) {
+      showToast('Selecting all videos recursively...', 'info');
+      try {
+        await setCheckRecursive(nodeId, true);
+        showToast('All videos in folder selected', 'success');
+      } catch (err) {
+        showToast(`Failed to select all videos: ${err.message}`, 'error');
+      }
+    } else {
+      await setCheckRecursive(nodeId, false);
+      showToast('Deselected all videos in folder', 'info');
+    }
+  } else {
+    setCheck(nodeId, newChecked);
+  }
   updateSelectedCount();
 }
 
@@ -1364,6 +1384,67 @@ function setCheck(nodeId, checked) {
         const childNodeId = cn.dataset.nodeId;
         if (childNodeId) {
           setCheck(childNodeId, checked);
+        }
+      }
+    }
+  }
+}
+
+async function setCheckRecursive(nodeId, checked) {
+  const treeData = state.tree[nodeId];
+  if (!treeData) return;
+
+  setCheck(nodeId, checked);
+
+  if (treeData.type === 'folder') {
+    if (checked) {
+      const childrenEl = document.getElementById(`children_${nodeId}`);
+      if (treeData.loaded && childrenEl) {
+        const childNodes = childrenEl.querySelectorAll(':scope > .tree-node');
+        for (const cn of childNodes) {
+          const childNodeId = cn.dataset.nodeId;
+          if (childNodeId) {
+            await setCheckRecursive(childNodeId, checked);
+          }
+        }
+      } else {
+        try {
+          const data = await apiFetch(`/api/folders?parent_id=${treeData.data.id}`);
+          if (data.data && Array.isArray(data.data)) {
+            for (const item of data.data) {
+              const type = item.material_type === 'FOLDER' ? 'folder' : (item.material_type === 'VIDEO' ? 'video' : null);
+              if (type) {
+                const childNodeId = `${type}_${item.id}`;
+                const title = item.Title || item.title || item.folder_name || item.name || 'Untitled';
+                const childFolderPath = type === 'folder'
+                  ? (treeData.folderPath ? treeData.folderPath + '/' + sanitize(title) : sanitize(title))
+                  : treeData.folderPath;
+
+                if (!state.tree[childNodeId]) {
+                  state.tree[childNodeId] = {
+                    data: item,
+                    type: type,
+                    folderPath: childFolderPath,
+                    parentPath: treeData.folderPath,
+                    loaded: false,
+                    expanded: false,
+                    checked: false,
+                  };
+                }
+                await setCheckRecursive(childNodeId, checked);
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to fetch children for ${nodeId}:`, err);
+          throw err;
+        }
+      }
+    } else {
+      const folderPath = treeData.folderPath;
+      for (const [childNodeId, childData] of Object.entries(state.tree)) {
+        if (childData.folderPath === folderPath || childData.folderPath.startsWith(folderPath + '/')) {
+          setCheck(childNodeId, false);
         }
       }
     }

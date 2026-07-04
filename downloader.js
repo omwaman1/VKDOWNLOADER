@@ -27,17 +27,42 @@ class DownloadManager {
    * Add videos to download queue.
    */
   addToQueue(videos, quality, downloadPath) {
+    let addedCount = 0;
     for (const video of videos) {
       if (this.queue.find(q => q.id === video.id && q.quality === (video.quality || quality))) {
         continue;
       }
 
+      const itemTitle = this.sanitizeFilename(video.title || `video_${video.id}`);
+      const itemQuality = video.quality || quality || '480p';
+      const itemDownloadPath = downloadPath || 'downloads';
+      const itemFolderPath = video.folderPath || '';
+
+      // Check if already completed
+      const outputDir = path.join(itemDownloadPath, itemFolderPath);
+      const outputFile = path.join(outputDir, `${itemTitle}_${itemQuality}.mkv`);
+      const progressFile = outputFile + '.progress';
+
+      let isComplete = false;
+      if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
+        try {
+          const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
+          if (prog.complete) {
+            isComplete = true;
+          }
+        } catch (e) {}
+      }
+
+      if (isComplete) {
+        continue; // Skip adding to the queue entirely
+      }
+
       const item = {
         id: video.id,
-        title: this.sanitizeFilename(video.title || `video_${video.id}`),
-        folderPath: video.folderPath || '',
-        quality: video.quality || quality || '480p',
-        downloadPath: downloadPath || 'downloads',
+        title: itemTitle,
+        folderPath: itemFolderPath,
+        quality: itemQuality,
+        downloadPath: itemDownloadPath,
         status: 'queued', // queued, downloading, complete, error, skipped, paused
         totalBytes: 0,
         downloadedBytes: 0,
@@ -49,10 +74,12 @@ class DownloadManager {
       };
 
       this.queue.push(item);
+      addedCount++;
     }
 
     this.broadcastQueueUpdate();
     this.processQueue();
+    return addedCount;
   }
 
   sanitizeFilename(name) {
@@ -176,207 +203,265 @@ class DownloadManager {
    * Core download task
    */
   async downloadVideo(item) {
-    item.status = 'downloading';
-    item.startTime = Date.now();
-    item.error = null;
-    this.abortControllers.set(item.id, { aborted: false });
-    this.broadcastProgress(item);
+    const outputDir = path.join(item.downloadPath, item.folderPath);
+    const outputFile = path.join(outputDir, `${item.title}_${item.quality}.mkv`);
+    const progressFile = outputFile + '.progress';
 
-    try {
-      if (!this.apiGet) {
-        throw new Error('API helper not configured on Downloader');
-      }
+    // Check if complete before any API calls
+    if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
+      try {
+        const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
+        if (prog.complete) {
+          console.log(`[DOWNLOAD] Video ID ${item.id} already completed. Skipping API fetch.`);
+          item.status = 'skipped';
+          item.totalBytes = prog.totalBytes;
+          item.downloadedBytes = prog.totalBytes;
+          this.broadcastProgress(item);
+          this.broadcastQueueUpdate();
+          this.processQueue();
+          return;
+        }
+      } catch (e) {}
+    }
 
-      console.log(`[DOWNLOAD] Fetching details for Video ID: ${item.id}`);
-      const details = await this.apiGet(`/get/fetchVideoDetailsById?course_id=110&video_id=${item.id}&ytflag=0&folder_wise_course=1&lc_app_api_url=`);
-      if (!details || details.status !== 200 || !details.data) {
-        throw new Error(details?.message || 'Failed to fetch video details from API');
-      }
+    const retries = 5;
+    let attempt = 0;
 
-      const videoData = details.data;
-      if (!videoData.encrypted_links || videoData.encrypted_links.length === 0) {
-        throw new Error('No encrypted download links found in video details');
-      }
+    while (attempt < retries) {
+      attempt++;
+      item.status = 'downloading';
+      item.startTime = Date.now();
+      item.error = null;
+      this.abortControllers.set(item.id, { aborted: false });
+      this.broadcastProgress(item);
 
-      // Find selected quality link
-      let selectedLink = videoData.encrypted_links.find(l => l.quality === item.quality);
-      if (!selectedLink) {
-        selectedLink = videoData.encrypted_links[0]; // fallback
-        item.quality = selectedLink.quality || 'unknown';
-      }
+      let inactivityTimer = null;
 
-      console.log(`[DOWNLOAD] Decrypting CDN link for quality: ${item.quality}`);
-      const VALUE = '638udh3829162018';
-      const SALT = 'fedcba9876543210';
+      try {
+        if (!this.apiGet) {
+          throw new Error('API helper not configured on Downloader');
+        }
 
-      const rawPath = selectedLink.path.split(':')[0];
-      const decryptedUrl = this.decrypt(rawPath, VALUE, SALT);
+        console.log(`[DOWNLOAD] Fetching details for Video ID: ${item.id} (Attempt ${attempt}/${retries})`);
+        const details = await this.apiGet(`/get/fetchVideoDetailsById?course_id=110&video_id=${item.id}&ytflag=0&folder_wise_course=1&lc_app_api_url=`);
+        if (!details || details.status !== 200 || !details.data) {
+          throw new Error(details?.message || 'Failed to fetch video details from API');
+        }
 
-      const rawKey = selectedLink.key.split(':')[0];
-      const decryptedKeyBase64 = this.decrypt(rawKey, VALUE, SALT);
-      const xorKeyString = Buffer.from(decryptedKeyBase64, 'base64').toString('utf8');
-      
-      console.log(`[DOWNLOAD] Decrypted CDN URL: ${decryptedUrl.substring(0, 100)}...`);
-      console.log(`[DOWNLOAD] XOR Decryption Key: ${xorKeyString}`);
+        const videoData = details.data;
+        if (!videoData.encrypted_links || videoData.encrypted_links.length === 0) {
+          throw new Error('No encrypted download links found in video details');
+        }
 
-      // Setup paths
-      const outputDir = path.join(item.downloadPath, item.folderPath);
-      const outputFile = path.join(outputDir, `${item.title}_${item.quality}.mkv`);
-      const progressFile = outputFile + '.progress';
+        // Find selected quality link
+        let selectedLink = videoData.encrypted_links.find(l => l.quality === item.quality);
+        if (!selectedLink) {
+          selectedLink = videoData.encrypted_links[0]; // fallback
+          item.quality = selectedLink.quality || 'unknown';
+        }
 
-      fs.mkdirSync(outputDir, { recursive: true });
+        console.log(`[DOWNLOAD] Decrypting CDN link for quality: ${item.quality}`);
+        const VALUE = '638udh3829162018';
+        const SALT = 'fedcba9876543210';
 
-      // Check if complete
-      if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
-        try {
-          const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
-          if (prog.complete) {
-            item.status = 'skipped';
-            item.totalBytes = prog.totalBytes;
-            item.downloadedBytes = prog.totalBytes;
-            this.broadcastProgress(item);
-            this.broadcastQueueUpdate();
-            this.processQueue();
-            return;
-          }
-        } catch (e) {}
-      }
+        const rawPath = selectedLink.path.split(':')[0];
+        const decryptedUrl = this.decrypt(rawPath, VALUE, SALT);
 
-      // Check file size for resume
-      let currentSize = 0;
-      if (fs.existsSync(outputFile)) {
-        currentSize = fs.statSync(outputFile).size;
-      }
+        const rawKey = selectedLink.key.split(':')[0];
+        const decryptedKeyBase64 = this.decrypt(rawKey, VALUE, SALT);
+        const xorKeyString = Buffer.from(decryptedKeyBase64, 'base64').toString('utf8');
+        
+        console.log(`[DOWNLOAD] Decrypted CDN URL: ${decryptedUrl.substring(0, 100)}...`);
+        console.log(`[DOWNLOAD] XOR Decryption Key: ${xorKeyString}`);
 
-      // Start HTTP Request
-      const cdnHeaders = {
-        ...this.apiHeaders,
-        'accept-encoding': 'identity',
-        'connection': 'keep-alive'
-      };
-      if (currentSize > 0) {
-        cdnHeaders['range'] = `bytes=${currentSize}-`;
-        console.log(`[DOWNLOAD] Resuming download from byte: ${currentSize}`);
-      }
+        fs.mkdirSync(outputDir, { recursive: true });
 
-      await new Promise((resolve, reject) => {
-        const parsedUrl = new URL(decryptedUrl);
-        const reqOpts = {
-          hostname: parsedUrl.hostname,
-          path: parsedUrl.pathname + parsedUrl.search,
-          headers: cdnHeaders,
-          rejectUnauthorized: false
+        // Check file size for resume
+        let currentSize = 0;
+        if (fs.existsSync(outputFile)) {
+          currentSize = fs.statSync(outputFile).size;
+        }
+
+        // Start HTTP Request
+        const cdnHeaders = {
+          ...this.apiHeaders,
+          'accept-encoding': 'identity',
+          'connection': 'keep-alive'
         };
+        if (currentSize > 0) {
+          cdnHeaders['range'] = `bytes=${currentSize}-`;
+          console.log(`[DOWNLOAD] Resuming download from byte: ${currentSize}`);
+        }
 
-        const req = https.get(reqOpts, (res) => {
-          this.activeRequests.set(item.id, req);
+        await new Promise((resolve, reject) => {
+          const parsedUrl = new URL(decryptedUrl);
+          const reqOpts = {
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname + parsedUrl.search,
+            headers: cdnHeaders,
+            rejectUnauthorized: false
+          };
 
-          if (res.statusCode === 416) {
-            // Range Not Satisfiable -> File is already complete!
-            console.log(`[DOWNLOAD] File already complete (HTTP 416)`);
-            fs.writeFileSync(progressFile, JSON.stringify({ complete: true, totalBytes: currentSize }));
-            resolve();
-            return;
-          }
+          let lastChunkTime = Date.now();
+          inactivityTimer = setInterval(() => {
+            if (Date.now() - lastChunkTime > 25000) { // 25 seconds of silence
+              cleanup();
+              console.error(`[DOWNLOAD] Inactivity timeout (25s) on Video ID ${item.id}`);
+              req.destroy(new Error('Connection hung (inactivity for 25s)'));
+            }
+          }, 5000);
 
-          if (res.statusCode !== 200 && res.statusCode !== 206) {
-            return reject(new Error(`CDN returned HTTP ${res.statusCode}`));
-          }
+          const cleanup = () => {
+            if (inactivityTimer) {
+              clearInterval(inactivityTimer);
+              inactivityTimer = null;
+            }
+          };
 
-          // Handle if server doesn't support range/resets it
-          if (res.statusCode === 200) {
-            currentSize = 0;
-          }
+          const req = https.get(reqOpts, (res) => {
+            this.activeRequests.set(item.id, req);
 
-          const totalContentLength = parseInt(res.headers['content-length'] || '0');
-          item.totalBytes = totalContentLength + currentSize;
-          item.downloadedBytes = currentSize;
-
-          const writeStream = fs.createWriteStream(outputFile, { flags: currentSize > 0 ? 'r+' : 'w', start: currentSize });
-
-          let isFirstChunk = true;
-          let bytesWrittenSession = 0;
-          const sessionStart = Date.now();
-          let lastUpdate = Date.now();
-
-          res.on('data', (chunk) => {
-            if (this.abortControllers.get(item.id)?.aborted) {
-              writeStream.end();
-              res.destroy();
-              reject(new Error('Aborted'));
+            if (res.statusCode === 416) {
+              console.log(`[DOWNLOAD] File already complete (HTTP 416)`);
+              fs.writeFileSync(progressFile, JSON.stringify({ complete: true, totalBytes: currentSize }));
+              cleanup();
+              resolve();
               return;
             }
 
-            let writeBuffer = chunk;
-
-            // XOR decrypt first 28 bytes of the file if starting from 0
-            if (currentSize === 0 && isFirstChunk) {
-              isFirstChunk = false;
-              writeBuffer = this.xorDecrypt(chunk, xorKeyString);
+            if (res.statusCode !== 200 && res.statusCode !== 206) {
+              cleanup();
+              return reject(new Error(`CDN returned HTTP ${res.statusCode}`));
             }
 
-            writeStream.write(writeBuffer);
-            bytesWrittenSession += chunk.length;
-            item.downloadedBytes = currentSize + bytesWrittenSession;
+            if (res.statusCode === 200) {
+              currentSize = 0;
+            }
 
-            // Throttle UI progress broadcasts to max once per 500ms
-            const now = Date.now();
-            if (now - lastUpdate > 500) {
-              const elapsed = (now - sessionStart) / 1000;
-              item.speed = elapsed > 0 ? bytesWrittenSession / elapsed : 0;
-              const remainingBytes = item.totalBytes - item.downloadedBytes;
-              item.eta = remainingBytes > 0 && item.speed > 0
-                ? this.formatTime(remainingBytes / item.speed)
-                : '';
+            const totalContentLength = parseInt(res.headers['content-length'] || '0');
+            item.totalBytes = totalContentLength + currentSize;
+            item.downloadedBytes = currentSize;
+
+            const writeStream = fs.createWriteStream(outputFile, { flags: currentSize > 0 ? 'r+' : 'w', start: currentSize });
+
+            let isFirstChunk = true;
+            let bytesWrittenSession = 0;
+            const sessionStart = Date.now();
+            let lastUpdate = Date.now();
+
+            res.on('data', (chunk) => {
+              lastChunkTime = Date.now(); // Reset inactivity timer
               
-              this.broadcastProgress(item);
-              lastUpdate = now;
-            }
-          });
-
-          res.on('end', () => {
-            writeStream.end(() => {
-              if (item.downloadedBytes >= item.totalBytes) {
-                fs.writeFileSync(progressFile, JSON.stringify({ complete: true, totalBytes: item.totalBytes }));
-                resolve();
-              } else {
-                reject(new Error(`Stream ended early: ${item.downloadedBytes}/${item.totalBytes} bytes downloaded`));
+              if (this.abortControllers.get(item.id)?.aborted) {
+                cleanup();
+                writeStream.end();
+                res.destroy();
+                reject(new Error('Aborted'));
+                return;
               }
+
+              let writeBuffer = chunk;
+
+              if (currentSize === 0 && isFirstChunk) {
+                isFirstChunk = false;
+                writeBuffer = this.xorDecrypt(chunk, xorKeyString);
+              }
+
+              writeStream.write(writeBuffer);
+              bytesWrittenSession += chunk.length;
+              item.downloadedBytes = currentSize + bytesWrittenSession;
+
+              const now = Date.now();
+              if (now - lastUpdate > 500) {
+                const elapsed = (now - sessionStart) / 1000;
+                item.speed = elapsed > 0 ? bytesWrittenSession / elapsed : 0;
+                const remainingBytes = item.totalBytes - item.downloadedBytes;
+                item.eta = remainingBytes > 0 && item.speed > 0
+                  ? this.formatTime(remainingBytes / item.speed)
+                  : '';
+                
+                this.broadcastProgress(item);
+                lastUpdate = now;
+              }
+            });
+
+            res.on('end', () => {
+              cleanup();
+              writeStream.end(() => {
+                if (item.downloadedBytes >= item.totalBytes) {
+                  fs.writeFileSync(progressFile, JSON.stringify({ complete: true, totalBytes: item.totalBytes }));
+                  resolve();
+                } else {
+                  reject(new Error(`Stream ended early: ${item.downloadedBytes}/${item.totalBytes} bytes downloaded`));
+                }
+              });
+            });
+
+            res.on('error', (err) => {
+              cleanup();
+              writeStream.end();
+              reject(err);
             });
           });
 
-          res.on('error', (err) => {
-            writeStream.end();
+          req.on('error', (err) => {
+            cleanup();
             reject(err);
+          });
+
+          // Inactivity socket timeout
+          req.setTimeout(25000, () => {
+            cleanup();
+            console.error(`[DOWNLOAD] Socket timeout (25s) on Video ID ${item.id}`);
+            req.destroy(new Error('Socket timeout (25s)'));
           });
         });
 
-        req.on('error', reject);
-      });
+        // Complete!
+        item.status = 'complete';
+        item.speed = 0;
+        item.eta = '';
+        this.broadcastProgress(item);
+        this.wsBroadcast({ type: 'complete', videoId: item.id });
+        break; // break retry loop on success
+        
+      } catch (err) {
+        if (inactivityTimer) {
+          clearInterval(inactivityTimer);
+          inactivityTimer = null;
+        }
 
-      // Complete!
-      item.status = 'complete';
-      item.speed = 0;
-      item.eta = '';
-      this.broadcastProgress(item);
-      this.wsBroadcast({ type: 'complete', videoId: item.id });
-    } catch (err) {
-      if (this.abortControllers.get(item.id)?.aborted) {
-        item.status = 'paused';
-        console.log(`[DOWNLOAD] Video download paused: ${item.title}`);
-      } else {
-        item.status = 'error';
-        item.error = err.message;
-        console.error(`[DOWNLOAD] Error downloading video: ${err.message}`);
-        this.wsBroadcast({ type: 'error', videoId: item.id, message: err.message });
+        if (this.abortControllers.get(item.id)?.aborted) {
+          item.status = 'paused';
+          console.log(`[DOWNLOAD] Video download paused: ${item.title}`);
+          break; // break retry loop if paused
+        }
+
+        console.error(`[DOWNLOAD] Error on attempt ${attempt} for Video ID ${item.id}: ${err.message}`);
+        
+        if (attempt >= retries) {
+          item.status = 'error';
+          item.error = err.message;
+          this.broadcastProgress(item);
+          this.wsBroadcast({ type: 'error', videoId: item.id, message: err.message });
+          break;
+        }
+
+        // Retry wait with linear backoff (2s * attempt)
+        console.log(`[DOWNLOAD] Retrying Video ID ${item.id} in ${2 * attempt}s...`);
+        item.status = 'queued';
+        item.speed = 0;
+        item.eta = 'Retrying...';
+        this.broadcastProgress(item);
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      } finally {
+        this.abortControllers.delete(item.id);
+        this.activeRequests.delete(item.id);
       }
-      this.broadcastProgress(item);
-    } finally {
-      this.abortControllers.delete(item.id);
-      this.activeRequests.delete(item.id);
-      this.broadcastQueueUpdate();
-      this.processQueue();
     }
+
+    this.broadcastQueueUpdate();
+    this.processQueue();
   }
 
   formatTime(seconds) {

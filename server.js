@@ -37,7 +37,8 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ──────────────── WebSocket Broadcast ────────────────
@@ -132,9 +133,9 @@ app.post('/api/download', (req, res) => {
     }
 
     const basePath = downloadPath || path.join(__dirname, 'downloads');
-    downloadManager.addToQueue(videos, quality || '480p', basePath);
+    const added = downloadManager.addToQueue(videos, quality || '480p', basePath);
 
-    res.json({ success: true, queued: videos.length, totalInQueue: downloadManager.queue.length });
+    res.json({ success: true, queued: added, totalInQueue: downloadManager.queue.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
