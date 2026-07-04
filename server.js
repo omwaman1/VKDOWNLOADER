@@ -132,7 +132,7 @@ app.post('/api/download', (req, res) => {
       downloadManager.setMaxConcurrent(threads);
     }
 
-    const basePath = downloadPath || path.join(__dirname, 'downloads');
+    const basePath = downloadPath || 'C:\\Users\\Admin1\\Downloads\\VKDOWNLOADER-main\\VKDOWNLOADER-main\\downloads\\OneDrive - wrzdw\\STUDY\\VKCLASS';
     const added = downloadManager.addToQueue(videos, quality || '480p', basePath);
 
     res.json({ success: true, queued: added, totalInQueue: downloadManager.queue.length });

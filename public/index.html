@@ -1043,7 +1043,7 @@ input[type="number"] { width: 52px; text-align: center; }
   <div class="bottom-bar">
     <div class="path-input-group">
       <label>Save to</label>
-      <input type="text" id="downloadPath" value="downloads">
+      <input type="text" id="downloadPath" value="C:\Users\Admin1\Downloads\VKDOWNLOADER-main\VKDOWNLOADER-main\downloads\OneDrive - wrzdw\STUDY\VKCLASS">
     </div>
 
     <div class="cdn-input-group">
@@ -1774,7 +1774,7 @@ async function apiFetch(url, options = {}) {
 }
 
 function sanitize(name) {
-  return (name || '').replace(/[<>:"\/\\|?*]/g, '_').replace(/\s+/g, ' ').trim();
+  return (name || '').replace(/[<>:"\/\\|?*]/g, '_').replace(/\s+/g, ' ').replace(/\.+$/, '').trim();
 }
 
 function escapeHtml(str) {

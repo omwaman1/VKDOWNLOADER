@@ -35,7 +35,7 @@ class DownloadManager {
 
       const itemTitle = this.sanitizeFilename(video.title || `video_${video.id}`);
       const itemQuality = video.quality || quality || '480p';
-      const itemDownloadPath = downloadPath || 'downloads';
+      const itemDownloadPath = downloadPath || 'C:\\Users\\Admin1\\Downloads\\VKDOWNLOADER-main\\VKDOWNLOADER-main\\downloads\\OneDrive - wrzdw\\STUDY\\VKCLASS';
       const itemFolderPath = video.folderPath || '';
 
       // Check if already completed
@@ -83,7 +83,7 @@ class DownloadManager {
   }
 
   sanitizeFilename(name) {
-    return name.replace(/[<>:"\/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim();
+    return name.replace(/[<>:"\/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').replace(/\.+$/, '').trim();
   }
 
   setMaxConcurrent(threads) {
