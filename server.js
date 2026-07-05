@@ -74,7 +74,8 @@ function wsBroadcast(data) {
 
 // ──── Helper: native HTTPS API call ────
 const https = require('https');
-function apiGet(apiPath) {
+
+function apiGetRaw(apiPath) {
   return new Promise((resolve, reject) => {
     https.get({
       hostname: 'vitthalkanganeapi.classx.co.in',
@@ -84,11 +85,36 @@ function apiGet(apiPath) {
       let d = '';
       res.on('data', c => d += c);
       res.on('end', () => {
+        if (res.statusCode === 429) {
+          reject(new Error('Too Many Requests'));
+          return;
+        }
         try { resolve(JSON.parse(d)); }
         catch (e) { reject(new Error('Invalid JSON: ' + d.substring(0, 200))); }
       });
     }).on('error', reject);
   });
+}
+
+async function apiGet(apiPath, retries = 3) {
+  let attempt = 0;
+  while (attempt < retries) {
+    try {
+      attempt++;
+      return await apiGetRaw(apiPath);
+    } catch (err) {
+      const isRateLimit = err.message.includes('Too Many Requests') || err.message.includes('429');
+      if (isRateLimit && attempt < retries) {
+        console.log(`[API] Rate limited on ${apiPath}. Retrying in 10s (attempt ${attempt}/${retries})...`);
+        await new Promise(r => setTimeout(r, 10000));
+      } else if (attempt < retries) {
+        console.log(`[API] Fetch failed on ${apiPath}: ${err.message}. Retrying in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 // ──────────────── Download Manager ────────────────

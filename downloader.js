@@ -14,7 +14,7 @@ class DownloadManager {
   constructor(wsBroadcast, apiGet, apiHeaders) {
     this.queue = [];
     this.activeDownloads = 0;
-    this.maxConcurrent = 4; // Concurrency of concurrent file downloads
+    this.maxConcurrent = 3; // Concurrency of concurrent file downloads
     this.paused = false;
     this.wsBroadcast = wsBroadcast || (() => {});
     this.apiGet = apiGet;
@@ -447,13 +447,16 @@ class DownloadManager {
           break;
         }
 
-        // Retry wait with linear backoff (2s * attempt)
-        console.log(`[DOWNLOAD] Retrying Video ID ${item.id} in ${2 * attempt}s...`);
+        // Detect rate limiting (Too Many Requests / 429) to apply a larger backoff
+        const isRateLimit = err.message.includes('Too Many Requests') || err.message.includes('429');
+        const delay = isRateLimit ? 30000 : (2000 * attempt);
+
+        console.log(`[DOWNLOAD] Retrying Video ID ${item.id} in ${delay / 1000}s...`);
         item.status = 'queued';
         item.speed = 0;
-        item.eta = 'Retrying...';
+        item.eta = isRateLimit ? 'Rate Limited (Waiting 30s)...' : 'Retrying...';
         this.broadcastProgress(item);
-        await new Promise(r => setTimeout(r, 2000 * attempt));
+        await new Promise(r => setTimeout(r, delay));
       } finally {
         this.abortControllers.delete(item.id);
         this.activeRequests.delete(item.id);
