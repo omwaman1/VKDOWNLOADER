@@ -39,7 +39,7 @@ class DownloadManager {
       const itemFolderPath = video.folderPath || '';
 
       // Check if already completed
-      const outputDir = path.join(itemDownloadPath, itemFolderPath);
+      const outputDir = this.getOutputDir(itemDownloadPath, itemFolderPath);
       const outputFile = path.join(outputDir, `${itemTitle}_${itemQuality}.mkv`);
       const progressFile = outputFile + '.progress';
 
@@ -91,6 +91,24 @@ class DownloadManager {
 
   sanitizeFilename(name) {
     return name.replace(/[<>:"\/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').replace(/\.+$/, '').trim();
+  }
+
+  getOutputDir(downloadPath, folderPath) {
+    let outputDir = path.join(downloadPath, folderPath);
+    const normDownloadPath = downloadPath.replace(/\\/g, '/');
+    const normFolderPath = folderPath.replace(/\\/g, '/');
+    const downloadParts = normDownloadPath.split('/');
+    const folderParts = normFolderPath.split('/');
+    
+    if (downloadParts.length > 0 && folderParts.length > 0) {
+      const lastDownloadPart = downloadParts[downloadParts.length - 1].toLowerCase();
+      const firstFolderPart = folderParts[0].toLowerCase();
+      if (lastDownloadPart === firstFolderPart && lastDownloadPart !== '') {
+        folderParts.shift();
+        outputDir = path.join(downloadPath, folderParts.join(path.sep));
+      }
+    }
+    return outputDir;
   }
 
   setMaxConcurrent(threads) {
@@ -210,7 +228,7 @@ class DownloadManager {
    * Core download task
    */
   async downloadVideo(item) {
-    const outputDir = path.join(item.downloadPath, item.folderPath);
+    const outputDir = this.getOutputDir(item.downloadPath, item.folderPath);
     const outputFile = path.join(outputDir, `${item.title}_${item.quality}.mkv`);
     const progressFile = outputFile + '.progress';
 
