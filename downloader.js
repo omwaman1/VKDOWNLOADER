@@ -38,25 +38,37 @@ class DownloadManager {
       const itemDownloadPath = downloadPath || 'C:\\Users\\Admin1\\Downloads\\VKDOWNLOADER-main\\VKDOWNLOADER-main\\downloads\\OneDrive - wrzdw\\STUDY\\VKCLASS';
       const itemFolderPath = video.folderPath || '';
 
-      // Check if already completed
+      // Check if already completed (in ANY quality)
       const outputDir = this.getOutputDir(itemDownloadPath, itemFolderPath);
-      const outputFile = path.join(outputDir, `${itemTitle}_${itemQuality}.mkv`);
-      const progressFile = outputFile + '.progress';
-
       let isComplete = false;
-      if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
-        try {
-          const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
-          if (prog.complete) {
-            isComplete = true;
-          }
-        } catch (e) {
-          // Fallback if cloud file provider is not running (reading throws error)
+      const qualitiesToCheck = ['480p', '720p', '360p', '240p'];
+      
+      const idxQuality = qualitiesToCheck.indexOf(itemQuality);
+      if (idxQuality > -1) {
+        qualitiesToCheck.splice(idxQuality, 1);
+      }
+      qualitiesToCheck.unshift(itemQuality);
+
+      for (const q of qualitiesToCheck) {
+        const outputFile = path.join(outputDir, `${itemTitle}_${q}.mkv`);
+        const progressFile = outputFile + '.progress';
+
+        if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
           try {
-            if (fs.statSync(progressFile).size > 0) {
+            const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
+            if (prog.complete) {
               isComplete = true;
+              break;
             }
-          } catch (statErr) {}
+          } catch (e) {
+            // Fallback if cloud file provider is not running (reading throws error)
+            try {
+              if (fs.statSync(progressFile).size > 0) {
+                isComplete = true;
+                break;
+              }
+            } catch (statErr) {}
+          }
         }
       }
 
@@ -232,41 +244,60 @@ class DownloadManager {
     const outputFile = path.join(outputDir, `${item.title}_${item.quality}.mkv`);
     const progressFile = outputFile + '.progress';
 
-    // Check if complete before any API calls
-    if (fs.existsSync(outputFile) && fs.existsSync(progressFile)) {
-      try {
-        const prog = JSON.parse(fs.readFileSync(progressFile, 'utf8'));
-        if (prog.complete) {
-          console.log(`[DOWNLOAD] Video ID ${item.id} already completed. Skipping API fetch.`);
-          item.status = 'skipped';
-          item.totalBytes = prog.totalBytes;
-          item.downloadedBytes = prog.totalBytes;
-          this.broadcastProgress(item);
-          this.broadcastQueueUpdate();
-          this.processQueue();
-          return;
-        }
-      } catch (e) {
-        // Fallback if cloud file provider is not running (reading throws error)
+    // Check if complete before any API calls (in ANY quality)
+    let isComplete = false;
+    let completedQuality = item.quality;
+    let progressData = null;
+    
+    const qualitiesToCheck = ['480p', '720p', '360p', '240p'];
+    const idxQuality = qualitiesToCheck.indexOf(item.quality);
+    if (idxQuality > -1) {
+      qualitiesToCheck.splice(idxQuality, 1);
+    }
+    qualitiesToCheck.unshift(item.quality);
+
+    for (const q of qualitiesToCheck) {
+      const qOutputFile = path.join(outputDir, `${item.title}_${q}.mkv`);
+      const qProgressFile = qOutputFile + '.progress';
+
+      if (fs.existsSync(qOutputFile) && fs.existsSync(qProgressFile)) {
         try {
-          if (fs.statSync(progressFile).size > 0) {
-            console.log(`[DOWNLOAD] Video ID ${item.id} already completed (OneDrive fallback). Skipping API fetch.`);
-            item.status = 'skipped';
-            try {
-              const mkvSize = fs.statSync(outputFile).size;
-              item.totalBytes = mkvSize;
-              item.downloadedBytes = mkvSize;
-            } catch (mkvErr) {
-              item.totalBytes = 0;
-              item.downloadedBytes = 0;
-            }
-            this.broadcastProgress(item);
-            this.broadcastQueueUpdate();
-            this.processQueue();
-            return;
+          const prog = JSON.parse(fs.readFileSync(qProgressFile, 'utf8'));
+          if (prog.complete) {
+            isComplete = true;
+            completedQuality = q;
+            progressData = prog;
+            break;
           }
-        } catch (statErr) {}
+        } catch (e) {
+          // Fallback if cloud file provider is not running (reading throws error)
+          try {
+            if (fs.statSync(qProgressFile).size > 0) {
+              isComplete = true;
+              completedQuality = q;
+              try {
+                const mkvSize = fs.statSync(qOutputFile).size;
+                progressData = { complete: true, totalBytes: mkvSize };
+              } catch (err) {
+                progressData = { complete: true, totalBytes: 0 };
+              }
+              break;
+            }
+          } catch (statErr) {}
+        }
       }
+    }
+
+    if (isComplete) {
+      console.log(`[DOWNLOAD] Video ID ${item.id} already completed in ${completedQuality}. Skipping API fetch.`);
+      item.status = 'skipped';
+      item.quality = completedQuality;
+      item.totalBytes = progressData ? progressData.totalBytes : 0;
+      item.downloadedBytes = progressData ? progressData.totalBytes : 0;
+      this.broadcastProgress(item);
+      this.broadcastQueueUpdate();
+      this.processQueue();
+      return;
     }
 
     const retries = 5;
