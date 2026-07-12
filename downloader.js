@@ -50,7 +50,14 @@ class DownloadManager {
           if (prog.complete) {
             isComplete = true;
           }
-        } catch (e) {}
+        } catch (e) {
+          // Fallback if cloud file provider is not running (reading throws error)
+          try {
+            if (fs.statSync(progressFile).size > 0) {
+              isComplete = true;
+            }
+          } catch (statErr) {}
+        }
       }
 
       if (isComplete) {
@@ -221,7 +228,27 @@ class DownloadManager {
           this.processQueue();
           return;
         }
-      } catch (e) {}
+      } catch (e) {
+        // Fallback if cloud file provider is not running (reading throws error)
+        try {
+          if (fs.statSync(progressFile).size > 0) {
+            console.log(`[DOWNLOAD] Video ID ${item.id} already completed (OneDrive fallback). Skipping API fetch.`);
+            item.status = 'skipped';
+            try {
+              const mkvSize = fs.statSync(outputFile).size;
+              item.totalBytes = mkvSize;
+              item.downloadedBytes = mkvSize;
+            } catch (mkvErr) {
+              item.totalBytes = 0;
+              item.downloadedBytes = 0;
+            }
+            this.broadcastProgress(item);
+            this.broadcastQueueUpdate();
+            this.processQueue();
+            return;
+          }
+        } catch (statErr) {}
+      }
     }
 
     const retries = 5;
