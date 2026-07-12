@@ -124,8 +124,37 @@ app.get('/api/folders', async (req, res) => {
   try {
     const parentId = req.query.parent_id || '-1';
     console.log(`[API] Fetching folders: parent_id=${parentId}`);
-    const data = await apiGet(`/get/folder_contentsv3?course_id=${COURSE_ID}&parent_id=${parentId}&windowsapp=true&start=0`);
-    res.json(data);
+    
+    let allData = [];
+    let start = 0;
+    let hasMore = true;
+    let status = 200;
+    let message = '';
+    let pageCount = 0;
+
+    while (hasMore && pageCount < 100) {
+      pageCount++;
+      const data = await apiGet(`/get/folder_contentsv3?course_id=${COURSE_ID}&parent_id=${parentId}&windowsapp=true&start=${start}`);
+      if (data) {
+        if (data.status) status = data.status;
+        if (data.message) message = data.message;
+        const pageData = data.data || [];
+        allData = allData.concat(pageData);
+        if (pageData.length < 20) {
+          hasMore = false;
+        } else {
+          start += pageData.length;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    res.json({
+      status,
+      message,
+      data: allData
+    });
   } catch (err) {
     console.error('[API] Folders error:', err.message);
     res.status(500).json({ error: err.message });
